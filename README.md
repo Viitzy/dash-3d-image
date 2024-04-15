@@ -17,7 +17,7 @@ sudo apt-get install python3-pil python3-pil.imagetk
     cd IDISF/python3/; python3 -m pip install . ; cd .. ; cd ..
 
 
-#Compiling and cleaning
+# Compiling and cleaning
 In IDISF/
 To compile all files: make
 For removing all generated files from source: make clean
