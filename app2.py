@@ -21,6 +21,10 @@ import skimage
 import time
 import os
 
+import re
+from PIL import Image
+from io import BytesIO
+
 DEBUG_MASK = False
 DEFAULT_STROKE_COLOR = px.colors.qualitative.Light24[0]
 DEFAULT_STROKE_WIDTH = 5
@@ -49,30 +53,30 @@ def PRINT(*vargs):
         print(*vargs)
 
 
-def make_seg_image(img):
-    """ Segment the image, then find the boundaries, then return an array that
-    is clear (alpha=0) where there are no boundaries. """
-    segb = np.zeros_like(img).astype("uint8")
-    seg = segmentation.slic(
-        img, start_label=1, compactness=0.1, n_segments=300
-    )
-    # Only keep superpixels with an average intensity greater than threshold
-    # in order to remove superpixels of the background
-    superpx_avg = (
-        np.histogram(
-            seg.astype(float), bins=np.arange(0, 310), weights=img.astype(float)
-        )[0]
-        / np.histogram(seg.astype(float), bins=np.arange(0, 310))[0]
-        > 10
-    )
-    mask_brain = superpx_avg[seg]
-    seg[np.logical_not(mask_brain)] = 0
-    seg, _, _ = segmentation.relabel_sequential(seg)
-    segb = segmentation.find_boundaries(seg).astype("uint8")
-    segl = image_utils.label_to_colors(
-        segb, colormap=["#000000", "#E48F72"], alpha=[0, 128], color_class_offset=0
-    )
-    return (segl, seg)
+# def make_seg_image(img):
+#     """ Segment the image, then find the boundaries, then return an array that
+#     is clear (alpha=0) where there are no boundaries. """
+#     segb = np.zeros_like(img).astype("uint8")
+#     seg = segmentation.slic(
+#         img, start_label=1, compactness=0.1, n_segments=300
+#     )
+#     # Only keep superpixels with an average intensity greater than threshold
+#     # in order to remove superpixels of the background
+#     superpx_avg = (
+#         np.histogram(
+#             seg.astype(float), bins=np.arange(0, 310), weights=img.astype(float)
+#         )[0]
+#         / np.histogram(seg.astype(float), bins=np.arange(0, 310))[0]
+#         > 10
+#     )
+#     mask_brain = superpx_avg[seg]
+#     seg[np.logical_not(mask_brain)] = 0
+#     seg, _, _ = segmentation.relabel_sequential(seg)
+#     segb = segmentation.find_boundaries(seg).astype("uint8")
+#     segl = image_utils.label_to_colors(
+#         segb, colormap=["#000000", "#E48F72"], alpha=[0, 128], color_class_offset=0
+#     )
+#     return (segl, seg)
 
 
 def make_default_figure(
@@ -147,28 +151,30 @@ def make_empty_found_segments():
     return fstc_slices
 
 
-if len(LOAD_SUPERPIXEL) > 0:
-    # load partitioned image (to save time)
-    if LOAD_SUPERPIXEL.endswith(".gz"):
-        import gzip
+# if len(LOAD_SUPERPIXEL) > 0:
+#     # load partitioned image (to save time)
+#     if LOAD_SUPERPIXEL.endswith(".gz"):
+#         import gzip
 
-        with gzip.open(LOAD_SUPERPIXEL) as fd:
-            dat = np.load(fd)
-            segl = dat["segl"]
-            seg = dat["seg"]
-    else:
-        dat = np.load(LOAD_SUPERPIXEL)
-        segl = dat["segl"]
-        seg = dat["seg"]
-else:
-    # partition image
-    segl, seg = make_seg_image(img)
+#         with gzip.open(LOAD_SUPERPIXEL) as fd:
+#             dat = np.load(fd)
+#             segl = dat["segl"]
+#             seg = dat["seg"]
+#     else:
+#         dat = np.load(LOAD_SUPERPIXEL)
+#         segl = dat["segl"]
+#         seg = dat["seg"]
+# else:
+#     # partition image
+#     segl, seg = make_seg_image(img)
 
-if len(SAVE_SUPERPIXEL) > 0:
-    np.savez(SAVE_SUPERPIXEL, segl=segl, seg=seg)
-    exit(0)
+# if len(SAVE_SUPERPIXEL) > 0:
+#     np.savez(SAVE_SUPERPIXEL, segl=segl, seg=seg)
+#     exit(0)
 
-seg_img = img_as_ubyte(segl)
+# seg_img = img_as_ubyte(segl)
+seg_img = img_as_ubyte(img)
+
 img_slices, seg_slices = [
     [
         # top
@@ -689,7 +695,7 @@ undo_data)
 
 
 def shapes_to_segs(
-    drawn_shapes_data, image_display_top_figure, image_display_side_figure,
+    drawn_shapes_data, image_display_top_figure, image_display_side_figure
 ):
     masks = np.zeros_like(img)
     for j, (graph_figure, (hscale, wscale)) in enumerate(
@@ -714,15 +720,93 @@ def shapes_to_segs(
                 # TODO: Maybe there's a more elegant way to downsample the mask?
                 np.moveaxis(masks, 0, j)[i, :, :] = mask[::hscale, ::wscale]
     found_segs_tensor = np.zeros_like(img)
-    if DEBUG_MASK:
-        found_segs_tensor[masks == 1] = 1
-    else:
-        # find labels beneath the mask
-        labels = set(seg[1 == masks])
-        # for each label found, select all of the segment with that label
-        for l in labels:
-            found_segs_tensor[seg == l] = 1
+    # if DEBUG_MASK:
+    found_segs_tensor[masks == 1] = 1
+    # else:
+    #     # find labels beneath the mask
+    #     labels = set(seg[1 == masks])
+    #     # for each label found, select all of the segment with that label
+    #     for l in labels:
+    #         found_segs_tensor[seg == l] = 1
     return found_segs_tensor
+    
+def extract_coords_from_path(path):
+    """
+    Extrai coordenadas dos comandos de caminho SVG.
+    O caminho segue um padrão que começa com 'M' seguido por várias 'L'.
+    """
+    # Regex para encontrar todos os 'L' seguidos de números (coordenadas)
+    coords = re.findall(r'L(\d+\.?\d*),(\d+\.?\d*)', path)
+    # Convertendo strings para float e então para int (caso tenha decimais)
+    return [[int(float(x)), int(float(y))] for x, y in coords]
+
+def convert_shapes_to_idisf_format(drawn_shapes_data):
+    coords = []
+    size_scribbles = []
+
+    # Itera sobre as duas visualizações (top e side)
+    for view_data in drawn_shapes_data:
+        for shape_list in view_data:
+            if shape_list:  # Se a lista de shapes não estiver vazia
+                for shape in shape_list:
+                    # Extrai coordenadas do 'path' se o tipo for 'path'
+                    if shape.get('type') == 'path':
+                        shape_coords = extract_coords_from_path(shape['path'])
+                        coords.extend(shape_coords)
+                        size_scribbles.append(len(shape_coords))
+
+    coords = np.array(coords, dtype=np.int32)
+    size_scribbles = np.array(size_scribbles, dtype=np.int32)
+
+    return coords, size_scribbles
+
+def base64_to_image_array(base64_string):
+    if "," in base64_string:
+        base64_string = base64_string.split(",")[1]
+    image_data = base64.b64decode(base64_string)
+    image = Image.open(BytesIO(image_data))
+    image_array = np.array(image)
+    return image_array
+
+def image_array_to_base64(image_array, format='PNG'):
+    # Converte o array NumPy para um objeto Image
+    image = Image.fromarray(image_array)
+    
+    # Cria um buffer de bytes para salvar a imagem
+    buffered = BytesIO()
+    
+    # Salva a imagem no buffer como PNG
+    image.save(buffered, format=format)
+    
+    # Converte os bytes para uma string Base64
+    img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
+    
+    # Retorna a string Base64 formatada para uso direto em URLs de dados
+    return 'data:image/{};base64,{}'.format(format.lower(), img_str)
+
+def segmentar_imagem(drawn_shapes_data, fatias, image_display_side_figure, indice_fatia_visivel):
+    n0, iterations, f, c1, c2, num_obj, segm_method, all_borders = 500, 6, 4, 0.7, 0.8, 1, 1, 1
+    coords, size_scribbles = convert_shapes_to_idisf_format(drawn_shapes_data)
+    # Assume que cada figura contém uma lista de imagens e que a fatia visível está em um índice específico
+    # Extraímos a URL da imagem base64 da fatia visível diretamente da figura
+    fatia_para_segmentar_url = fatias['layout']['images'][indice_fatia_visivel]['source']
+    
+    # Converte a URL Base64 para um array de imagem usando uma função auxiliar
+    fatia_para_segmentar = base64_to_image_array(fatia_para_segmentar_url)
+    
+    # Chama a função de segmentação 2D na fatia selecionada
+    fatia_segmentada, border_img_top = iDISF_scribbles(fatia_para_segmentar, n0, iterations, coords, size_scribbles, num_obj, f, c1, c2, segm_method, all_borders)
+    
+    # Converte a fatia segmentada de volta para uma imagem Base64 para ser usada na figura
+    fatia_segmentada_url = image_array_to_base64(fatia_segmentada)
+    
+    # Substitui a URL da imagem original pela segmentada na figura
+    figuras_segmentadas = fatias.copy()  # Faz uma cópia das figuras originais para evitar alterações diretas
+    figuras_segmentadas['layout']['images'][indice_fatia_visivel]['source'] = fatia_segmentada_url
+
+    # Retorna a coleção de figuras atualizada
+    return figuras_segmentadas, image_display_side_figure
+
 
 
 @app.callback(
@@ -752,14 +836,21 @@ def draw_shapes_react(
     ):
         return dash.no_update
     t1 = time.time()
-    found_segs_tensor = shapes_to_segs(
-        drawn_shapes_data, image_display_top_figure, image_display_side_figure,
-    )
+    # found_segs_tensor = shapes_to_segs(
+    #     drawn_shapes_data, image_display_top_figure, image_display_side_figure,
+    # )
+    # Chama a função segmentar_imagem para atualizar a fatia com base nas anotações
+    image_display_top_figurel, image_display_side_figurel = segmentar_imagem(drawn_shapes_data, image_display_top_figure, image_display_side_figure, current_render_id)
+    teste = shapes_to_segs(drawn_shapes_data, image_display_top_figurel, image_display_side_figurel)
+    # fig1 = base64_to_image_array(image_display_top_figurel['layout']['images'][0]['source'])
+    # fig2 = base64_to_image_array(image_display_side_figurel['layout']['images'][0]['source'])
+    # teste = np.stack((fig1, fig2), axis=0)
+    # teste = shapes_to_segs(drawn_shapes_data, image_display_top_figure, image_display_side_figure)
     t2 = time.time()
     PRINT("Time to convert shapes to segments:", t2 - t1)
     # convert to a colored image
     fst_colored = image_utils.label_to_colors(
-        found_segs_tensor,
+        teste,
         colormap=["#8A2BE2"],
         alpha=[128],
         # we map label 0 to the color #000000 using no_map_zero, so we start at
