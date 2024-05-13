@@ -1,4 +1,4 @@
-from idisf import iDISF_scribbles
+# from idisf import iDISF_scribbles
 from disf import DISF_Superpixels
 import dash
 from dash.dependencies import Input, Output, State, ClientsideFunction
@@ -21,6 +21,12 @@ import base64
 import skimage
 import time
 import os
+from skimage import io, segmentation
+import subprocess
+from PIL import Image
+from skimage.color import rgb2gray
+import matplotlib.pyplot as plt
+import cv2
 
 DEBUG_MASK = False
 DEFAULT_STROKE_COLOR = px.colors.qualitative.Light24[0]
@@ -49,95 +55,445 @@ def PRINT(*vargs):
     if DEBUG:
         print(*vargs)
 
-def reconstruir_imagem(top_views, side_views):
-    # Verificar se o número de fatias nas vistas superior e lateral é o mesmo
-    if len(top_views) != len(side_views):
-        raise ValueError("O número de fatias nas vistas superior e lateral não é o mesmo")
+def plot_slice(array_3d, axis, index):
+    """
+    Plota uma fatia de um array 3D.
+    
+    Args:
+    array_3d (np.ndarray): Array 3D que representa a imagem reconstruída.
+    axis (int): Eixo ao longo do qual a fatia será tomada (0, 1, ou 2).
+    index (int): Índice da fatia ao longo do eixo especificado.
+    """
+    if axis == 0:
+        slice = array_3d[index, :, :]
+    elif axis == 1:
+        slice = array_3d[:, index, :]
+    elif axis == 2:
+        slice = array_3d[:, :, index]
+    else:
+        raise ValueError("Axis deve ser 0, 1 ou 2.")
 
-    # Obter o tamanho da imagem a partir de uma das vistas
-    img_shape = top_views[0].shape
+    plt.figure(figsize=(6, 6))
+    plt.imshow(slice, cmap='gray')
+    plt.title(f'Slice along axis {axis} at index {index}')
+    plt.axis('off')
+    plt.show()
 
-    # Criar uma imagem vazia para reconstrução
-    reconstructed_img = np.zeros((img_shape[0], len(side_views), img_shape[1]))
+def reconstruct_image(top_views, side_views):
+    top_array = np.array(top_views)
+    side_array = np.array(side_views)
 
-    # Preencher a imagem reconstruída com as fatias
-    for i in range(len(top_views)):
-        # Preencher a parte da fatia lateral que corresponde à dimensão Y da imagem original
-        side_view_padded = np.zeros((img_shape[0], img_shape[1], img_shape[2]))
-        side_view_padded[:, :side_views[i].shape[1], :] = side_views[i]
-        reconstructed_img[:, i, :] = top_views[i] + side_view_padded[:, :, i]
+    # Checa se as dimensões são compatíveis para reconstrução.
+    if top_array.shape[1] != side_array.shape[0] or top_array.shape[2] != side_array.shape[2]:
+        raise ValueError("As dimensões das vistas não são compatíveis para reconstrução.")
 
-    # Juntar as fatias para reconstruir a imagem completa
-    reconstructed_img = np.mean(reconstructed_img, axis=1).astype(np.uint8)  # Média das fatias
+     # Inicializa o array tridimensional
+    depth, height, width = top_array.shape[0], side_array.shape[1], side_array.shape[2]
+    reconstructed_img = np.zeros((depth, height, width))
+
+    # Reconstrução usando top_views
+    reconstructed_img = top_array
 
     return reconstructed_img
 
+def process_and_save_segmentation_borders(input_path, output_path):
+    """
+    Carrega uma imagem segmentada do caminho fornecido, encontra as bordas da segmentação,
+    e salva a imagem resultante das bordas no caminho de saída especificado.
+    
+    Args:
+    input_path (str): Caminho para o arquivo de imagem segmentada.
+    output_path (str): Caminho para salvar a imagem das bordas da segmentação.
+    """
+    # Carregar imagem usando Pillow
+    img = Image.open(input_path)
+    
+    # Converter a imagem PIL para um array NumPy
+    img_array = np.array(img)
+    
+    # Encontrar as bordas dos segmentos
+    borders = segmentation.find_boundaries(img_array, mode='thick')
+    
+    # Converter as bordas de booleano para uint8 (0 ou 255)
+    borders_uint8 = (borders * 255).astype(np.uint8)
+    
+    # Salvar a imagem das bordas usando skimage.io
+    io.imsave(output_path, borders_uint8)
+
+def save_as_ppm(image_array: np.ndarray, directory: str, filename: str):
+    """
+    Salva uma imagem numpy em formato .ppm.
+
+    Parâmetros:
+    - image_array (np.ndarray): A imagem representada como um array numpy.
+    - directory (str): O caminho para o diretório onde a imagem será salva.
+    - filename (str): O nome do arquivo .ppm.
+
+    Retorna:
+    - None
+    """
+    # Verifica se o diretório existe, caso contrário, cria o diretório.
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+    
+    # Cria um objeto de imagem a partir do array numpy.
+    img = Image.fromarray(image_array)
+
+    # Certifica-se de que a imagem seja convertida para RGB.
+    img = img.convert("RGB")
+
+    # Salva a imagem no formato .ppm.
+    ppm_path = os.path.join(directory, f"{filename}.ppm")
+    img.save(ppm_path)
+
+    print(f"Imagem salva como {ppm_path}")
+
+def collect_output_images(img_shape):
+    top_views_output = []
+    side_views_output = []
+
+    # Carregar imagens processadas de top_view
+    for i in range(img_shape[0]):  # Supondo que img_shape[0] é o número de fatias top_view
+        filename = f'top_view/output_{i}.pgm'
+        processed_image = io.imread(filename)
+        # Converter para escala de cinza se necessário ou manipular conforme necessário
+        # processed_image_gray = rgb2gray(processed_image)  # Se for uma imagem RGB
+        top_views_output.append(processed_image)
+
+    # Carregar imagens processadas de side_view
+    for i in range(img_shape[1]):  # Supondo que img_shape[1] é o número de fatias side_view
+        filename = f'side_view/output_{i}.pgm'
+        processed_image = io.imread(filename)
+        # Converter para escala de cinza se necessário ou manipular conforme necessário
+        # processed_image_gray = rgb2gray(processed_image)  # Se for uma imagem RGB
+        side_views_output.append(processed_image)
+
+    return top_views_output, side_views_output
+
 def make_seg_image2(img):
-    # Dividindo a imagem em topview e sideview
-    top_views = [img[i, :, :] for i in range(img.shape[0])]  # Top views são fatias ao longo do eixo Z
-    top_views_rgb = [color.gray2rgb(view) for view in top_views]  # Converte top views para RGB
-    side_views = [img[:, i, :] for i in range(img.shape[1])]  # Side views são fatias ao longo do eixo Y
-    side_views_rgb = [color.gray2rgb(view) for view in side_views]  # Converte side views para RGB
+    if not os.path.exists('top_view'):
+        os.makedirs('top_view')
+    if not os.path.exists('side_view'):
+        os.makedirs('side_view')
+
+    # top_views = [img[i, :, :] for i in range(img.shape[0])]
+    # side_views = [img[:, i, :] for i in range(img.shape[1])]
+
+    num_slices = img.shape[0]
+    seg = []
+    segb = []
+    # Processar cada fatia com seu algoritmo de segmentação
+    for i in range(num_slices):
+        slice = img[i, :, :]
+        # filename = f'top_view/top_view_{i}.pgm'
+        # io.imsave(filename, slice)
+        
+        # input_path = f'top_view/top_view_{i}.pgm'
+        # output_path = f'top_view/output_{i}.pgm'
+        # result = subprocess.run(
+        #     ["./SICLE/bin/RunSICLE", "--img", input_path, "--out", output_path],
+        #     check=True,
+        #     stdout=subprocess.PIPE,
+        #     stderr=subprocess.PIPE
+        # )    
+        
+        filename = f'top_view/output_{i}.pgm'
+        processed_image = io.imread(filename)
+
+        # Carregar a imagem original e a imagem segmentada
+        original_img = cv2.imread(f'top_view/top_view_{i}.pgm', cv2.IMREAD_GRAYSCALE)
+        segmented_img = cv2.imread(f'top_view/output_{i}.pgm', cv2.IMREAD_GRAYSCALE)
+
+        # Calcular a máscara de segmentação
+        # Aqui, você pode ajustar a forma de calcular a diferença dependendo de como a segmentação foi realizada
+        # Neste exemplo, simplesmente subtraímos a imagem segmentada da original
+        # mask = cv2.absdiff(original_img, segmented_img)
+
+        # Limiar para criar uma máscara binária
+        _, mask = cv2.threshold(original_img, 1, 255, cv2.THRESH_BINARY)
+
+        # Usar a máscara para limpar a imagem segmentada
+        # Aqui estamos assumindo que a área de interesse é branca na imagem segmentada
+        cleaned_img = cv2.bitwise_and(segmented_img, mask)
 
 
-    # Garantir que as visualizações RGB mantenham a mesma forma que a imagem original
-    # top_views_rgb = [view[:img.shape[1], :img.shape[2], :] for view in top_views_rgb]
-    # side_views_rgb = [view[:img.shape[0], :img.shape[2], :] for view in side_views_rgb]
-    
-    num_init_seeds = 8000
-    num_final_superpixels = 50
+        borders = segmentation.find_boundaries(cleaned_img, mode='thick')
+        # borders_uint8 = (borders * 255).astype(np.uint8)
 
-    # Processa cada fatia de top view com DISF_Superpixels
-    top_border_imgs = []
-    for top_view_rgb in top_views_rgb:
-        top_view_rgb_int = img_as_ubyte(top_view_rgb)  # Converte para inteiro de 8 bits
-        top_view_rgb_int_contig = np.ascontiguousarray(top_view_rgb_int, dtype=np.int32)  # Garante contiguidade e tipo de dados
-        _, border_img = DISF_Superpixels(top_view_rgb_int_contig, num_init_seeds, num_final_superpixels)
-        top_border_imgs.append(border_img)
+        seg.append(cleaned_img)
+        segb.append(borders)
 
-    # Processa cada fatia de side view com DISF_Superpixels
-    side_border_imgs = []
-    for side_view_rgb in side_views_rgb:
-        side_view_rgb_int = img_as_ubyte(side_view_rgb)  # Converte para inteiro de 8 bits
-        side_view_rgb_int_contig = np.ascontiguousarray(side_view_rgb_int, dtype=np.int32)  # Garante contiguidade e tipo de dados
-        _, border_img = DISF_Superpixels(side_view_rgb_int_contig, num_init_seeds, num_final_superpixels)
-        side_border_imgs.append(border_img)
+    seg = np.array(seg)
+    segb = np.array(segb)
 
-    # Empilhando as imagens de borda sem transformar em RGB novamente
-    top_border_imgs = np.stack(top_border_imgs, axis=0)
-    
-    side_border_imgs = np.stack(side_border_imgs, axis=1)
-    
-    seg = np.concatenate([np.expand_dims(top_view, axis=1) for top_view in top_border_imgs], axis=1)
-    seg = np.concatenate([np.expand_dims(side_view, axis=0) for side_view in side_border_imgs], axis=0)
-
-    # seg = reconstruir_imagem(top_border_imgs, side_border_imgs)
-    # seg = np.stack([top_border_imgs, side_border_imgs], axis=2)  # Empilha as imagens ao longo do eixo 3
-    # Juntando as imagens de borda novamente--> outra opcao para concatenar
-    # seg = np.concatenate([top_border_imgs, side_border_imgs], axis=0)
-    
-    print(seg.shape)
-
-
-    
-    
-    # Only keep superpixels with an average intensity greater than threshold
-    # in order to remove superpixels of the background
-    superpx_avg = (
-        np.histogram(
-            seg.astype(float), bins=np.arange(0, 310), weights=img.astype(float)
-        )[0]
-        / np.histogram(seg.astype(float), bins=np.arange(0, 310))[0]
-        > 10
-    )
-    mask_brain = superpx_avg[seg]
-    seg[np.logical_not(mask_brain)] = 0
-    seg, _, _ = segmentation.relabel_sequential(seg)
-    segb = segmentation.find_boundaries(seg).astype("uint8")
     segl = image_utils.label_to_colors(
         segb, colormap=["#000000", "#E48F72"], alpha=[0, 128], color_class_offset=0
     )
+
+    # Número de fatias
+    # num_slices = img.shape[0]
+    # seg = []
+    # # Processar cada fatia com seu algoritmo de segmentação
+    # for i in range(num_slices):
+    #     slice = img[i, :, :]
+    #     # Aqui você aplica seu algoritmo de segmentação na fatia
+    #     # Você pode salvar ou manipular a fatia segmentada conforme necessário
+    #     # top_view_rgb = color.gray2rgb(slice)
+    #     # top_view_pgm = Image.fromarray(slice)
+    #     # Converte a imagem para escala de cinza (necessário para formato .pgm).
+    #     # top_view_pgm = slice.convert("L")
+
+    #     filename = f'top_view/top_view_{i}.pgm'
+    #     io.imsave(filename, slice)
+        
+    #     input_path = f'top_view/top_view_{i}.pgm'
+    #     output_path = f'top_view/output_{i}.pgm'
+    #     result = subprocess.run(
+    #         ["./SICLE/bin/RunSICLE", "--img", input_path, "--out", output_path],
+    #         check=True,
+    #         stdout=subprocess.PIPE,
+    #         stderr=subprocess.PIPE
+    #     )
+    #     # process_and_save_segmentation_borders(output_path, output_path)
+    #     filename = f'top_view/output_{i}.pgm'
+    #     processed_image = io.imread(filename)
+    #     # Converter para escala de cinza se necessário ou manipular conforme necessário
+    #     # processed_image_gray = rgb2gray(processed_image)  # Se for uma imagem RGB
+    #     seg.append(processed_image)
+    # seg = np.array(seg)
+
+    # segb = np.zeros_like(img).astype("uint8")
+    # seg = segmentation.slic(
+    #     img, start_label=1, multichannel=False, compactness=0.1, n_segments=300
+    # )
+    # segb = segmentation.find_boundaries(seg).astype("uint8")
+    # segl = image_utils.label_to_colors(
+    #     segb, colormap=["#000000", "#E48F72"], alpha=[0, 128], color_class_offset=0
+    # )
+
+    # Salvar cada fatia de imagem
+    # for i, top_view in enumerate(top_views):
+    #     top_view_rgb = color.gray2rgb(top_view)
+
+    #     top_view_pgm = Image.fromarray(top_view_rgb)
+    #     # Converte a imagem para escala de cinza (necessário para formato .pgm).
+    #     top_view_pgm = top_view_pgm.convert("L")
+
+    #     filename = f'top_view/top_view_{i}.pgm'
+    #     io.imsave(filename, img_as_ubyte(top_view_pgm))
+
+    # for i, side_view in enumerate(side_views):
+    #     side_view_rgb = color.gray2rgb(side_view)
+
+    #     side_view_pgm = Image.fromarray(side_view_rgb)
+    #     # Converte a imagem para escala de cinza (necessário para formato .pgm).
+    #     side_view_pgm = side_view_pgm.convert("L")
+
+    #     filename = f'side_view/side_view_{i}.pgm'
+    #     io.imsave(filename, img_as_ubyte(side_view_pgm))
+
+    # # Processar imagens usando subprocess
+    # for i in range(len(top_views)):
+    #     input_path = f'top_view/top_view_{i}.pgm'
+    #     output_path = f'top_view/output_{i}.pgm'
+    #     result = subprocess.run(
+    #         ["./SICLE/bin/RunSICLE", "--img", input_path, "--out", output_path],
+    #         check=True,
+    #         stdout=subprocess.PIPE,
+    #         stderr=subprocess.PIPE
+    #     )
+    #     process_and_save_segmentation_borders(output_path, output_path)
+
+    # for i in range(len(side_views)):
+    #     input_path = f'side_view/side_view_{i}.pgm'
+    #     output_path = f'side_view/output_{i}.pgm'
+    #     result = subprocess.run(
+    #         ["./SICLE/bin/RunSICLE", "--img", input_path, "--out", output_path],
+    #         check=True,
+    #         stdout=subprocess.PIPE,
+    #         stderr=subprocess.PIPE
+    #     )
+    #     process_and_save_segmentation_borders(output_path, output_path)
+
+    # top_views_output, side_views_output = collect_output_images(img.shape)
+
+    # seg = np.zeros_like(img)
+    # print(seg.shape)
+    # seg = np.stack(border_img_top, axis = 0) + np.stack(border_img_top, axis = 2)
+    # print(seg.shape)
+
+    # Converta a lista de arrays em um único array NumPy
+    # arr1 = np.stack(top_views_output)  # Isso criará um array com formato (155, 240, 240)
+    # arr2 = np.stack(side_views_output)  # Presumindo que já está no formato correto (240, 240)
+
+    # array1 = np.array(top_views_output)
+    # print(array1.shape)
+    # array2 = np.array(side_views_output)
+    # print(array2.shape)
+
+    # array1 = top_views_output
+    # array2 = side_views_output
+
+    # array1 = array1.transpose(0, 1, 2)
+    # print(array1.shape)
+    # array2 = array2.transpose(1, 0, 2)
+    # print(array2.shape)
+
+    # top_views = [img[i, :, :] for i in range(img.shape[0])]
+    # side_views = [img[:, i, :] for i in range(img.shape[1])]
+    # seg = reconstruct_image(array1, array2)
+
+    # plot_slice(seg, 2, 70)  # Visualiza a 50ª fatia ao longo do eixo X
+    # print(reconstructed_img.shape)
+
+    # seg = np.stack([array1, array2], axis=0)
+    # seg = np.stack(array1, axis = 0)
+    # seg = np.stack(array2, axis = 0)
+
+    # #direita boa
+    # seg = np.stack(top_views_output, axis = 0)
+    # seg = np.stack(side_views_output, axis = 1)
+
+    print(seg.shape)
+
+    # # Calcular pesos totais e contagem total para cada bin de superpixel
+    # weights = np.histogram(seg, bins=np.arange(311), weights=img.astype(float))[0]
+    # counts = np.histogram(seg, bins=np.arange(311))[0]
+
+    # # Calcular a média ponderada para cada superpixel
+    # # Evitar divisão por zero usando np.maximum para garantir que não dividimos por zero
+    # average_intensity = weights / np.maximum(counts, 1)
+
+    # # Criar uma máscara onde a média ponderada é maior que 10
+    # mask_brain = average_intensity > 10
+
+    # # Aplicar a máscara ao seg usando a indexação direta com os rótulos de seg
+    # filtered_seg = mask_brain[seg]
+
+    # # Zerar os superpixels que não cumprem o critério de intensidade
+    # seg[~filtered_seg] = 0
+
+    # # Relabelar os superpixels para garantir a sequencialidade dos rótulos
+    # seg, _, _ = segmentation.relabel_sequential(seg)
+
+    # # Encontrar bordas dos superpixels e converter para uint8 para visualização
+    # segb = segmentation.find_boundaries(seg).astype("uint8")
+
+    # # Colorir as bordas para visualização
+    # segl = image_utils.label_to_colors(
+    #     segb, colormap=["#000000", "#E48F72"], alpha=[0, 128], color_class_offset=0
+    # )
+
     return (segl, seg)
+
+# def make_seg_image2(img):
+#     # Dividindo a imagem em topview e sideview
+#     top_views = [img[i, :, :] for i in range(img.shape[0])]  # Top views são fatias ao longo do eixo Z
+#     top_views_rgb = [color.gray2rgb(view) for view in top_views]  # Converte top views para RGB
+    
+#     side_views = [img[:, i, :] for i in range(img.shape[1])]  # Side views são fatias ao longo do eixo Y
+#     side_views_rgb = [color.gray2rgb(view) for view in side_views]  # Converte side views para RGB
+
+
+#     # Garantir que as visualizações RGB mantenham a mesma forma que a imagem original
+#     # top_views_rgb = [view[:img.shape[1], :img.shape[2], :] for view in top_views_rgb]
+#     # side_views_rgb = [view[:img.shape[0], :img.shape[2], :] for view in side_views_rgb]
+    
+#     num_init_seeds = 8000
+#     num_final_superpixels = 5
+
+#     # Processa cada fatia de top view com DISF_Superpixels
+#     top_border_imgs = []
+#     for top_view_rgb in top_views_rgb:
+#         top_view_rgb_int = img_as_ubyte(top_view_rgb)  # Converte para inteiro de 8 bits
+#         top_view_rgb_int_contig = np.ascontiguousarray(top_view_rgb_int, dtype=np.int32)  # Garante contiguidade e tipo de dados
+#         label_img, border_img_top = DISF_Superpixels(top_view_rgb_int_contig, num_init_seeds, num_final_superpixels)
+#         top_border_imgs.append(border_img_top)
+
+#     # Processa cada fatia de side view com DISF_Superpixels
+#     side_border_imgs = []
+#     for side_view_rgb in side_views_rgb:
+#         side_view_rgb_int = img_as_ubyte(side_view_rgb)  # Converte para inteiro de 8 bits
+#         side_view_rgb_int_contig = np.ascontiguousarray(side_view_rgb_int, dtype=np.int32)  # Garante contiguidade e tipo de dados
+#         label_img, border_img_side = DISF_Superpixels(side_view_rgb_int_contig, num_init_seeds, num_final_superpixels)
+#         side_border_imgs.append(border_img_side)
+
+#     # Empilhando as imagens de borda sem transformar em RGB novamente
+
+#     # top_border_imgs = np.stack(top_border_imgs, axis=0)   
+#     # side_border_imgs = np.stack(side_border_imgs, axis=1) 
+
+#     seg = np.zeros_like(img)
+#     print(seg.shape)
+#     seg = np.stack(border_img_top, axis = 0) + np.stack(border_img_top, axis = 2)
+#     print(seg.shape)
+
+    
+#     # Repete array2 155 vezes e ajusta a forma para (155, 240, 240)
+#     # array2_repeated = np.repeat(border_img_side[np.newaxis, :, :], 155, axis=0)
+
+#     # # Concatenando ao longo do novo eixo
+#     # seg = np.concatenate((array1_expanded, array2_repeated), axis=2)  # Resultado terá formato (155, 240, 240)
+
+
+#     # #direita boa
+#     # seg = np.stack(border_img_top, axis = 0)
+#     # seg = np.stack(border_img_side, axis = 1)
+
+#     #esquerda boa
+#     # seg = np.stack(top_border_imgs, axis = 0)
+#     # seg = np.stack(side_border_imgs, axis = 1)
+
+#     # seg = np.concatenate([np.expand_dims(side_view, axis=1) for side_view in side_border_imgs], axis=1)
+#     # seg = np.concatenate([np.expand_dims(top_view, axis=0) for top_view in top_border_imgs], axis=0)
+
+#     # seg = np.stack(top_border_imgs, axis=1)  # Empilha as imagens ao longo do eixo 3
+#     # seg = np.stack(side_border_imgs, axis=2)  # Empilha as imagens ao longo do eixo 3
+
+    
+#     print(seg.shape)
+
+#     # Calcular pesos totais e contagem total para cada bin de superpixel
+#     weights = np.histogram(seg, bins=np.arange(311), weights=img.astype(float))[0]
+#     counts = np.histogram(seg, bins=np.arange(311))[0]
+
+#     # Calcular a média ponderada para cada superpixel
+#     # Evitar divisão por zero usando np.maximum para garantir que não dividimos por zero
+#     average_intensity = weights / np.maximum(counts, 1)
+
+#     # Criar uma máscara onde a média ponderada é maior que 10
+#     mask_brain = average_intensity > 10
+
+#     # Aplicar a máscara ao seg usando a indexação direta com os rótulos de seg
+#     filtered_seg = mask_brain[seg]
+
+#     # Zerar os superpixels que não cumprem o critério de intensidade
+#     seg[~filtered_seg] = 0
+
+#     # Relabelar os superpixels para garantir a sequencialidade dos rótulos
+#     seg, _, _ = segmentation.relabel_sequential(seg)
+
+#     # Encontrar bordas dos superpixels e converter para uint8 para visualização
+#     segb = segmentation.find_boundaries(seg).astype("uint8")
+
+#     # Colorir as bordas para visualização
+#     segl = image_utils.label_to_colors(
+#         segb, colormap=["#000000", "#E48F72"], alpha=[0, 128], color_class_offset=0
+#     )
+  
+#     # seg[np.logical_not((np.histogram(seg.astype(float), bins=np.arange(0, 310), weights=img.astype(float))[0]/np.histogram(seg.astype(float), bins=np.arange(0, 310))[0] > 10)[seg])]=0
+    
+#     # Only keep superpixels with an average intensity greater than threshold
+#     # in order to remove superpixels of the background
+#     # superpx_avg = ((np.histogram(seg.astype(float), bins=np.arange(0, 310), weights=img.astype(float))[0] / (np.histogram(seg.astype(float), bins=np.arange(0, 310))[0]) > 10))
+#     # mask_brain = superpx_avg[seg]
+#     # seg[np.logical_not(mask_brain)] = 0
+#     # seg, _, _ = segmentation.relabel_sequential(seg)
+#     # segb = segmentation.find_boundaries(seg).astype("uint8")
+#     # segl = image_utils.label_to_colors(
+#     #     segb, colormap=["#000000", "#E48F72"], alpha=[0, 128], color_class_offset=0
+#     # )
+#     return (segl, seg)
 
 def make_seg_image(img):
     """ Segment the image, then find the boundaries, then return an array that
