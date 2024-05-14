@@ -240,13 +240,12 @@ iftImage *ovlayBorders
     }
     else
     {
-      ovlay_img->val[p_idx] = orig_img->val[p_idx];
+      ovlay_img->val[p_idx] = 255;
       if(iftIsColorImage(orig_img) == true)
       {
-        ovlay_img->Cb[p_idx] = orig_img->Cb[p_idx];
-        ovlay_img->Cr[p_idx] = orig_img->Cr[p_idx];
+        ovlay_img->Cb[p_idx] = 128;
+        ovlay_img->Cr[p_idx] = 128;
       }
-
     }
   }
   iftDestroyAdjRel(&A);

@@ -36,7 +36,7 @@ IFT_DEBUG = NO
 # LibPNG: Requires version 1.6.29
 # LibJPEG: Requires version 9.0
 IFT_OMP = NO
-IFT_LIBPNG = NO
+IFT_LIBPNG = YES
 IFT_LIBJPEG = NO
 
 # It is expecting a GNU GCC compiler. For other compilers, modifications 

@@ -188,8 +188,8 @@ def make_seg_image2(img):
         # filename = f'top_view/top_view_{i}.pgm'
         # io.imsave(filename, slice)
         
-        # input_path = f'top_view/top_view_{i}.pgm'
-        # output_path = f'top_view/output_{i}.pgm'
+        # input_path = f'top_view/'
+        # output_path = f'top_view_output/output_.pgm'
         # result = subprocess.run(
         #     ["./SICLE/bin/RunSICLE", "--img", input_path, "--out", output_path],
         #     check=True,
@@ -197,38 +197,58 @@ def make_seg_image2(img):
         #     stderr=subprocess.PIPE
         # )    
         
-        filename = f'top_view/output_{i}.pgm'
-        processed_image = io.imread(filename)
+        # filename = f'top_view_output/output_{i:05d}.pgm'
+        # processed_image = io.imread(filename)
 
         # Carregar a imagem original e a imagem segmentada
-        original_img = cv2.imread(f'top_view/top_view_{i}.pgm', cv2.IMREAD_GRAYSCALE)
-        segmented_img = cv2.imread(f'top_view/output_{i}.pgm', cv2.IMREAD_GRAYSCALE)
+        # original_img = cv2.imread(f'top_view/top_view_{i}.pgm', cv2.IMREAD_GRAYSCALE)
+        # segmented_img = cv2.imread(f'top_view_output/output_{i:05d}.pgm', cv2.IMREAD_GRAYSCALE)
 
+        # ./SICLE/bin/RunSICLE --conn-opt fsum --crit-opt maxsc --img ./top_view/ --out ./top_view_output/output_.png --n0 5000 --nf 500
+        # ./SICLE/bin/RunOvlayBorders --img ./top_view/ --labels ./top_view_output/ --out ./borders_output/output_.png
+        
+        segmented_img_path = f'top_view_output/output_{i:05d}.png'
+        with Image.open(segmented_img_path) as file:
+            segmented_img = np.array(file)
+            seg.append(segmented_img)
+
+
+        borders_img_path = f'borders_output/output_{i:05d}.png'
+        with Image.open(borders_img_path) as file:
+            borders_img = np.array(file)
+            image = Image.fromarray(borders_img)
+            gray_image = image.convert("L")
+            gray_borders = np.array(gray_image)
+            segb.append(gray_borders)
+
+        
         # Calcular a máscara de segmentação
         # Aqui, você pode ajustar a forma de calcular a diferença dependendo de como a segmentação foi realizada
         # Neste exemplo, simplesmente subtraímos a imagem segmentada da original
         # mask = cv2.absdiff(original_img, segmented_img)
 
         # Limiar para criar uma máscara binária
-        _, mask = cv2.threshold(original_img, 1, 255, cv2.THRESH_BINARY)
+        # _, mask = cv2.threshold(original_img, 1, 255, cv2.THRESH_BINARY)
 
-        # Usar a máscara para limpar a imagem segmentada
-        # Aqui estamos assumindo que a área de interesse é branca na imagem segmentada
-        cleaned_img = cv2.bitwise_and(segmented_img, mask)
+        # # Usar a máscara para limpar a imagem segmentada
+        # # Aqui estamos assumindo que a área de interesse é branca na imagem segmentada
+        # cleaned_img = cv2.bitwise_and(segmented_img, mask)
 
 
-        borders = segmentation.find_boundaries(cleaned_img, mode='thick')
+        # borders = segmentation.find_boundaries(cleaned_img, mode='thick')
         # borders_uint8 = (borders * 255).astype(np.uint8)
 
-        seg.append(cleaned_img)
-        segb.append(borders)
+        
 
     seg = np.array(seg)
+    print(seg.shape)
     segb = np.array(segb)
+    print(segb.shape)
 
     segl = image_utils.label_to_colors(
-        segb, colormap=["#000000", "#E48F72"], alpha=[0, 128], color_class_offset=0
+        segb, colormap=["#E48F72", "#000000"], alpha=[128, 0], color_class_offset=0
     )
+    print(segl.shape)
 
     # Número de fatias
     # num_slices = img.shape[0]
@@ -354,7 +374,7 @@ def make_seg_image2(img):
     # seg = np.stack(top_views_output, axis = 0)
     # seg = np.stack(side_views_output, axis = 1)
 
-    print(seg.shape)
+    # print(seg.shape)
 
     # # Calcular pesos totais e contagem total para cada bin de superpixel
     # weights = np.histogram(seg, bins=np.arange(311), weights=img.astype(float))[0]
@@ -1470,4 +1490,4 @@ def update_click_output(button_click, close_click):
 
 
 if __name__ == "__main__":
-    app.run_server(debug=DEBUG)
+    app.run_server(debug=DEBUG, port=8000)
